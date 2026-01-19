@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: questionnaire-decoder-api
+    env: docker
+    plan: free
+    autoDeploy: true
