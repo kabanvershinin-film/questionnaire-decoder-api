@@ -1,4 +1,5 @@
 import json, re, os
+from difflib import get_close_matches
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from docx import Document
@@ -18,9 +19,10 @@ app.add_middleware(
 def norm(s: str) -> str:
     s = s.strip()
     s = re.sub(r"\s+", " ", s)
-    s = re.sub(r"[\u200b\u00a0]", " ", s)
+    s = s.replace("\u00a0", " ").replace("\u200b", " ")
     s = re.sub(r"\([^)]*\)", "", s)  # убираем пояснения в скобках
-    return s.strip().lower()
+    s = s.strip().lower()
+    return s
 
 # Загружаем базу расшифровок
 if os.path.exists("decode_map.json"):
@@ -30,9 +32,13 @@ else:
     raw = {}
 
 DECODE_MAP = {norm(k): v for k, v in raw.items()}
+DECODE_KEYS = list(DECODE_MAP.keys())
 
 PLUS_MARKS = {"+", "＋"}  # плюс обычный и полноширинный
 TEXT_MARKS = ("☑", "☒", "✔", "X", "x")  # если где-то будут галочки в тексте
+
+# насколько “похожим” должен быть пункт, чтобы считать совпадением
+FUZZY_CUTOFF = 0.62
 
 @app.get("/health")
 def health():
@@ -45,14 +51,15 @@ async def decode(file: UploadFile = File(...)):
 
     extracted = []
 
-    # 1) ГЛАВНОЕ: ищем отмеченные пункты в ТАБЛИЦАХ (у тебя + стоит в правой колонке)
+    # 1) Плюсы в таблицах (главное)
     for table in doc.tables:
         for row in table.rows:
             if len(row.cells) < 2:
                 continue
             left = (row.cells[0].text or "").strip()
             right = (row.cells[1].text or "").strip()
-            if right in PLUS_MARKS and left:
+            # плюс может быть с пробелами/переносами
+            if (("+" in right) or ("＋" in right)) and left:
                 extracted.append(left)
 
     # 2) На всякий случай: если где-то отметки стоят в обычном тексте
@@ -61,8 +68,7 @@ async def decode(file: UploadFile = File(...)):
         if not t:
             continue
         if "+" in t or "＋" in t or any(m in t for m in TEXT_MARKS):
-            clean = t
-            clean = clean.replace("+", " ").replace("＋", " ")
+            clean = t.replace("+", " ").replace("＋", " ")
             for m in TEXT_MARKS:
                 clean = clean.replace(m, " ")
             clean = clean.strip(" -–—\t")
@@ -73,9 +79,20 @@ async def decode(file: UploadFile = File(...)):
     extracted = list(dict.fromkeys(extracted))
 
     matched, missed, report_parts = [], [], []
+    missed_suggestions = {}  # что было “похоже” (для отладки)
+
     for symptom in extracted:
         key = norm(symptom)
+
+        # 1) точное совпадение
         text = DECODE_MAP.get(key)
+
+        # 2) если нет — пытаемся найти похожий ключ
+        if not text and DECODE_KEYS:
+            cand = get_close_matches(key, DECODE_KEYS, n=1, cutoff=FUZZY_CUTOFF)
+            if cand:
+                text = DECODE_MAP[cand[0]]
+                missed_suggestions[symptom] = cand[0]  # покажем, что сопоставили
 
         if text:
             matched.append(symptom)
@@ -88,6 +105,7 @@ async def decode(file: UploadFile = File(...)):
     return {
         "matched": matched,
         "missed": missed,
-        "extracted": extracted,  # чтобы видеть, что именно нашли в файле
+        "extracted": extracted,
+        "missed_suggestions": missed_suggestions,
         "report_markdown": report
     }
