@@ -26,7 +26,8 @@ with open("decode_map.json", "r", encoding="utf-8") as f:
     raw = json.load(f)
 
 DECODE_MAP = {norm(k): v for k, v in raw.items()}
-CHECK_MARKS = ("☑", "☒", "✔", "X", "x")
+CHECK_MARKS = ("+", "＋", "☑", "☒", "✔", "X", "x")
+
 
 @app.get("/health")
 def health():
